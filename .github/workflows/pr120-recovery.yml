@@ -1,0 +1,187 @@
+name: Agent Vigil PR120 Recovery
+
+on:
+  # This workflow is valid only while the recovery base is the public mirror's
+  # default branch. GitHub must select these base-owned bytes.
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  evidence:
+    name: Mirror PR120 exact-head proof
+    if: >-
+      github.event.pull_request.state == 'open' &&
+      github.event.pull_request.base.ref == 'recovery-pr120-v022-base2-5925e8b' &&
+      github.event.pull_request.head.ref == 'recovery-pr120-v022-head2-a2dc18c' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Select the exact hosted Node.js release
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22.23.2
+          package-manager-cache: false
+
+      - id: identity
+        name: Bind the default-selected workflow, PR body, and mirror tuple
+        shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REPOSITORY: ${{ github.repository }}
+          EVENT_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          EVENT_PATH: ${{ github.event_path }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          [[ "$EVENT_NAME" == "pull_request_target" ]]
+          [[ "$EVENT_REPOSITORY" == "sulmusic2-star/agent-vigil-governance-recovery-20260827" ]]
+          [[ "$EVENT_HEAD_REPOSITORY" == "$EVENT_REPOSITORY" ]]
+          [[ "$EVENT_BASE_REF" == "recovery-pr120-v022-base2-5925e8b" ]]
+          [[ "$EVENT_HEAD_REF" == "recovery-pr120-v022-head2-a2dc18c" ]]
+          [[ "$EVENT_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$WORKFLOW_SHA" == "$EVENT_BASE_SHA" ]]
+          [[ -f "$EVENT_PATH" && ! -L "$EVENT_PATH" ]]
+          pr_author=$(/usr/bin/jq -er '.pull_request.user.login | select(type=="string" and test("^[A-Za-z0-9-]+$"))' "$EVENT_PATH")
+          [[ "$pr_author" == "sulmusic2-star" ]]
+          pr_body=$(/usr/bin/jq -er '.pull_request.body // "" | select(type=="string")' "$EVENT_PATH")
+          body_digest=$(/usr/bin/printf '%s' "$pr_body" | /usr/bin/sha256sum | { read -r value _; printf '%s' "$value"; })
+          [[ "$body_digest" =~ ^[0-9a-f]{64}$ ]]
+          echo "pr_author=$pr_author" >> "$GITHUB_OUTPUT"
+          echo "pr_body_hash=sha256:$body_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the exact mirror candidate without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          allow-unsafe-pr-checkout: true
+
+      - id: equivalence
+        name: Prove the mirror patch equals original PR 120
+        shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+        env:
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ORIGINAL_BASE_SHA: 5925e8bcbaf97f08c8c840252f486e96bf3f9775
+          ORIGINAL_HEAD_SHA: a2dc18c987e55cf0e73d08daccc2b7e0e5b16dab
+          EXPECTED_PATCH_SHA256: 4bd0614ccc718525261aefe0d882e7914813e03d555a44eb17cdba8ba1149418
+        run: |
+          git cat-file -e "$ORIGINAL_BASE_SHA^{commit}"
+          git cat-file -e "$ORIGINAL_HEAD_SHA^{commit}"
+          git merge-base --is-ancestor "$ORIGINAL_BASE_SHA" "$ORIGINAL_HEAD_SHA"
+          git merge-base --is-ancestor "$ORIGINAL_BASE_SHA" "$EVENT_BASE_SHA"
+          git merge-base --is-ancestor "$ORIGINAL_HEAD_SHA" "$EVENT_HEAD_SHA"
+
+          git diff --quiet "$ORIGINAL_BASE_SHA" "$EVENT_BASE_SHA" -- \
+            . ':(exclude).agent-vigil.json' ':(exclude).github/workflows/pr120-recovery.yml'
+          git diff --quiet "$ORIGINAL_HEAD_SHA" "$EVENT_HEAD_SHA" -- \
+            . ':(exclude).agent-vigil.json' ':(exclude).github/workflows/pr120-recovery.yml'
+          git diff --quiet "$ORIGINAL_HEAD_SHA" "$EVENT_HEAD_SHA" -- .agent-vigil.json
+          git diff --quiet "$EVENT_BASE_SHA" "$EVENT_HEAD_SHA" -- .github/workflows/pr120-recovery.yml
+
+          original_patch=$({ git diff --binary "$ORIGINAL_BASE_SHA" "$ORIGINAL_HEAD_SHA"; } | /usr/bin/sha256sum | { read -r value _; printf '%s' "$value"; })
+          mirror_patch=$({ git diff --binary "$EVENT_BASE_SHA" "$EVENT_HEAD_SHA" -- . ':(exclude).agent-vigil.json' ':(exclude).github/workflows/pr120-recovery.yml'; } | /usr/bin/sha256sum | { read -r value _; printf '%s' "$value"; })
+          [[ "$original_patch" == "$EXPECTED_PATCH_SHA256" ]]
+          [[ "$mirror_patch" == "$EXPECTED_PATCH_SHA256" ]]
+
+          read -r files additions deletions < <(git diff --numstat "$EVENT_BASE_SHA" "$EVENT_HEAD_SHA" -- . ':(exclude).agent-vigil.json' ':(exclude).github/workflows/pr120-recovery.yml' | /usr/bin/awk '{a+=$1; d+=$2; n++} END {print n, a, d}')
+          [[ "$files" == "14" ]]
+          [[ "$additions" == "238" ]]
+          [[ "$deletions" == "135" ]]
+          echo "patch_sha256=$mirror_patch" >> "$GITHUB_OUTPUT"
+
+      - id: vigil
+        name: Exercise the released verifier in the candidate-only contract
+        uses: sulmusic2-star/agent-vigil@5925e8bcbaf97f08c8c840252f486e96bf3f9775
+        with:
+          mode: maintainer
+          policy: .agent-vigil.json
+          policy-ref: ${{ github.event.pull_request.base.sha }}
+          repo: .
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          isolate-candidate: true
+          candidate-setup-cmd: npm ci --ignore-scripts
+
+      - id: binding
+        name: Assert PASS and retain the exact recovery binding
+        shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+        env:
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PROOF_PR_NUMBER: ${{ github.event.pull_request.number }}
+          PROOF_PR_AUTHOR: ${{ steps.identity.outputs.pr_author }}
+          PROOF_PR_BODY_HASH: ${{ steps.identity.outputs.pr_body_hash }}
+          PATCH_SHA256: ${{ steps.equivalence.outputs.patch_sha256 }}
+          PROOF_STATUS: ${{ steps.vigil.outputs.status }}
+          PROOF_RECEIPT_HASH: ${{ steps.vigil.outputs['receipt-hash'] }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          [[ "$PROOF_STATUS" == "PASS" ]]
+          [[ "$PROOF_RECEIPT_HASH" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$PATCH_SHA256" == "4bd0614ccc718525261aefe0d882e7914813e03d555a44eb17cdba8ba1149418" ]]
+          [[ "$WORKFLOW_SHA" == "$EVENT_BASE_SHA" ]]
+          [[ "$PROOF_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$PROOF_PR_AUTHOR" == "sulmusic2-star" ]]
+          [[ "$PROOF_PR_BODY_HASH" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$WORKFLOW_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$WORKFLOW_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+
+          binding="$RUNNER_TEMP/agent-vigil-pr120-recovery-binding.json"
+          checksum="$RUNNER_TEMP/agent-vigil-pr120-recovery-binding.sha256"
+          umask 077
+          /usr/bin/printf '%s\n' \
+            '{' \
+            '  "schemaVersion": 1,' \
+            '  "kind": "agent-vigil-pr120-governance-recovery",' \
+            '  "repository": "sulmusic2-star/agent-vigil-governance-recovery-20260827",' \
+            '  "repositoryId": 1348922192,' \
+            '  "repositoryOwner": "sulmusic2-star",' \
+            '  "repositoryOwnerId": 238686658,' \
+            "  \"proofPullRequest\": $PROOF_PR_NUMBER," \
+            "  \"proofPullRequestAuthor\": \"$PROOF_PR_AUTHOR\"," \
+            "  \"proofPullRequestBodyHash\": \"$PROOF_PR_BODY_HASH\"," \
+            "  \"proofBaseRef\": \"$EVENT_BASE_REF\"," \
+            "  \"proofHeadRef\": \"$EVENT_HEAD_REF\"," \
+            "  \"workflowRunId\": $WORKFLOW_RUN_ID," \
+            "  \"workflowRunAttempt\": $WORKFLOW_RUN_ATTEMPT," \
+            "  \"workflowSha\": \"$WORKFLOW_SHA\"," \
+            "  \"mirrorBaseSha\": \"$EVENT_BASE_SHA\"," \
+            "  \"mirrorHeadSha\": \"$EVENT_HEAD_SHA\"," \
+            '  "originalRepository": "sulmusic2-star/agent-vigil",' \
+            '  "originalPullRequest": 120,' \
+            '  "originalBaseSha": "5925e8bcbaf97f08c8c840252f486e96bf3f9775",' \
+            '  "originalHeadSha": "a2dc18c987e55cf0e73d08daccc2b7e0e5b16dab",' \
+            '  "runtimeSha": "5925e8bcbaf97f08c8c840252f486e96bf3f9775",' \
+            "  \"patchSha256\": \"$PATCH_SHA256\"," \
+            "  \"status\": \"$PROOF_STATUS\"," \
+            "  \"receiptHash\": \"$PROOF_RECEIPT_HASH\"" \
+            '}' > "$binding"
+          digest=$(/usr/bin/sha256sum "$binding" | { read -r value _; printf '%s' "$value"; })
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          /usr/bin/printf '%s  %s\n' "$digest" 'agent-vigil-pr120-recovery-binding.json' > "$checksum"
+          echo "binding=$binding" >> "$GITHUB_OUTPUT"
+          echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the exact proof binding
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-vigil-pr120-recovery-a2dc18c987e55cf0e73d08daccc2b7e0e5b16dab
+          path: |
+            ${{ steps.binding.outputs.binding }}
+            ${{ steps.binding.outputs.checksum }}
+          if-no-files-found: error
+          retention-days: 30
